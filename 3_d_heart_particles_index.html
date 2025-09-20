@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>3D Heart Particles</title>
+  <style>
+    html, body {
+      height: 100%;
+      margin: 0;
+      background: #0b0b0d;
+      overflow: hidden;
+      font-family: Inter, system-ui, Arial;
+    }
+    #container {
+      width: 100%;
+      height: 100%;
+      position: relative;
+    }
+    #centerText {
+      position: absolute;
+      left: 50%;
+      top: 8%;
+      transform: translate(-50%, -50%);
+      color: #fff;
+      font-size: 48px;
+      font-weight: bold;
+      text-align: center;
+      pointer-events: none;
+      padding: 0.5rem 1.5rem;
+      border-radius: 12px;
+      animation: glow 2.5s ease-in-out infinite, float 4s ease-in-out infinite;
+    }
+    @keyframes glow {
+      0%,100% { text-shadow: 0 0 5px #ff4b4b,0 0 10px #ff4b4b,0 0 20px #ff4b4b; }
+      50%     { text-shadow: 0 0 15px #ff8080,0 0 30px #ff4b4b,0 0 40px #ff8080; }
+    }
+    @keyframes float {
+      0%,100% { transform: translate(-50%, -50%) translateY(0); }
+      50%     { transform: translate(-50%, -50%) translateY(-10px); }
+    }
+    .hint {
+      position: absolute;
+      left: 8px;
+      bottom: 8px;
+      color: #aaa;
+      font-size: 12px;
+    }
+    canvas { display: block; }
+  </style>
+</head>
+
+<body>
+  <div id="container">
+    <div id="centerText">Lan Hương</div>
+    <div class="hint">Nhấp để tái tạo hiệu ứng</div>
+  </div>
+
+  <script src="https://unpkg.com/three@0.154.0/build/three.min.js"></script>
+  <script>
+    // ======= CÁC THÔNG SỐ DỄ TÙY CHỈNH =======
+    const PARTICLE_COUNT = 20000;
+    const PARTICLE_SIZE  = 0.15;
+    const HEART_SCALE    = 1.2;
+    const ROTATION_SPEED = 0.0025;  // tốc độ xoay (nhỏ hơn = xoay chậm hơn)
+    const BEAT_SPEED     = 1.2;     // nhịp đập (Hz)
+    const BEAT_INTENSITY = 0.08;    // biên độ phóng to/thu nhỏ
+    const ANIM_MIN = 0.9, ANIM_MAX = 1.8;
+
+    const container = document.getElementById('container');
+    const scene  = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(
+        45, container.clientWidth / container.clientHeight, 0.1, 1000 );
+    camera.position.set(0, 0, 8);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setPixelRatio(window.devicePixelRatio || 1);
+    renderer.setSize(container.clientWidth, container.clientHeight);
+    container.appendChild(renderer.domElement);
+
+    // ======= SINH ĐIỂM TRÁI TIM =======
+    const geometry = new THREE.BufferGeometry();
+    const positions = new Float32Array(PARTICLE_COUNT * 3);
+    const startPositions = new Float32Array(PARTICLE_COUNT * 3);
+    const targetPositions = new Float32Array(PARTICLE_COUNT * 3);
+    const delays = new Float32Array(PARTICLE_COUNT);
+    const durations = new Float32Array(PARTICLE_COUNT);
+
+    function heartImplicit(x, y) {
+      return Math.pow(x*x + y*y - 1, 3) - x*x*y*y*y;
+    }
+
+    function generateTargetPoints(count) {
+      const pts = [];
+      let tries = 0;
+      while (pts.length < count && tries < count * 80) {
+        tries++;
+        const x = (Math.random() * 2 - 1) * 1.4;
+        const y = (Math.random() * 2 - 1) * 1.4;
+        if (heartImplicit(x, y) <= 0) {
+          const r = Math.sqrt(x*x + y*y);
+          // viền mỏng -> trong dày
+          const thickness = 1 - Math.min(r / 1.4, 1);
+          const z = (Math.random() - 0.5) * (0.2 + 0.8 * thickness);
+          pts.push(new THREE.Vector3(x * HEART_SCALE, y * HEART_SCALE, z));
+        }
+      }
+      return pts;
+    }
+
+    const targets = generateTargetPoints(PARTICLE_COUNT);
+    for (let i = 0; i < PARTICLE_COUNT; i++) {
+      const sx = (Math.random() * 2 - 1) * 6;
+      const sy = (Math.random() * 2 - 1) * 6;
+      const sz = (Math.random() * 2 - 1) * 6;
+      startPositions[i*3]   = sx;
+      startPositions[i*3+1] = sy;
+      startPositions[i*3+2] = sz;
+
+      const t = targets[i];
+      targetPositions[i*3]   = t.x;
+      targetPositions[i*3+1] = t.y;
+      targetPositions[i*3+2] = t.z;
+
+      positions[i*3]   = sx;
+      positions[i*3+1] = sy;
+      positions[i*3+2] = sz;
+
+      delays[i]    = Math.random() * 0.8;
+      durations[i] = ANIM_MIN + Math.random() * (ANIM_MAX - ANIM_MIN);
+    }
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+
+    const material = new THREE.PointsMaterial({
+      size: PARTICLE_SIZE,
+      sizeAttenuation: true,
+      transparent: true,
+      opacity: 0.9,
+      color: new THREE.Color(0xff2d2d),
+      blending: THREE.AdditiveBlending
+    });
+    const points = new THREE.Points(geometry, material);
+    scene.add(points);
+
+    // ======= ANIMATION =======
+    let startTime = performance.now() / 1000;
+    const beatStart = startTime;
+
+    function easeOutCubic(t){ return 1 - Math.pow(1 - t, 3); }
+
+    function animate() {
+      requestAnimationFrame(animate);
+      const now = performance.now() / 1000;
+      const elapsed = now - startTime;
+
+      for (let i = 0; i < PARTICLE_COUNT; i++) {
+        let t = (elapsed - delays[i]) / durations[i];
+        t = t < 0 ? 0 : t > 1 ? 1 : t;
+        const eased = easeOutCubic(t);
+        const sx = startPositions[i*3], sy = startPositions[i*3+1], sz = startPositions[i*3+2];
+        const tx = targetPositions[i*3], ty = targetPositions[i*3+1], tz = targetPositions[i*3+2];
+        positions[i*3]   = sx + (tx - sx) * eased;
+        positions[i*3+1] = sy + (ty - sy) * eased;
+        positions[i*3+2] = sz + (tz - sz) * eased;
+      }
+      geometry.attributes.position.needsUpdate = true;
+
+      // Xoay chậm hơn/nhanh hơn bằng ROTATION_SPEED
+      points.rotation.y += ROTATION_SPEED;
+
+      // Nhịp tim
+      const beatTime = now - beatStart;
+      const scale = 1 + Math.abs(Math.sin(beatTime * Math.PI * BEAT_SPEED)) * BEAT_INTENSITY;
+      points.scale.set(scale, scale, scale);
+
+      renderer.render(scene, camera);
+    }
+    animate();
+
+    // ======= SỰ KIỆN =======
+    window.addEventListener('resize', () => {
+      camera.aspect = container.clientWidth / container.clientHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(container.clientWidth, container.clientHeight);
+    });
+
+    container.addEventListener('click', () => {
+      for (let i = 0; i < PARTICLE_COUNT; i++) {
+        startPositions[i*3]   = (Math.random() * 2 - 1) * 6;
+        startPositions[i*3+1] = (Math.random() * 2 - 1) * 6;
+        startPositions[i*3+2] = (Math.random() * 2 - 1) * 6;
+        delays[i]    = Math.random() * 0.7;
+        durations[i] = ANIM_MIN + Math.random() * (ANIM_MAX - ANIM_MIN);
+      }
+      startTime = performance.now() / 1000;
+    });
+
+    // Cho phép thay chữ / màu từ bên ngoài
+    window.setCenterText   = txt => document.getElementById('centerText').textContent = txt;
+    window.setParticleColor= hex => material.color.set(hex);
+  </script>
+</body>
+</html>
